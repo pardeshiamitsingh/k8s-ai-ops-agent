@@ -1,0 +1,11 @@
+pyproject.toml
+src/k8s_ai_ops/__init__.py
+src/k8s_ai_ops/api/__init__.py
+src/k8s_ai_ops/api/main.py
+src/k8s_ai_ops/config/__init__.py
+src/k8s_ai_ops/config/settings.py
+src/k8s_ai_ops_agent.egg-info/PKG-INFO
+src/k8s_ai_ops_agent.egg-info/SOURCES.txt
+src/k8s_ai_ops_agent.egg-info/dependency_links.txt
+src/k8s_ai_ops_agent.egg-info/requires.txt
+src/k8s_ai_ops_agent.egg-info/top_level.txt

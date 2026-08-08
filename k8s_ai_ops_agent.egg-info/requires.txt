@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+langchain
+langgraph
+langchain-openai
+kubernetes
+httpx
+structlog
+
+[dev]
+pytest
+pytest-asyncio
+ruff
+mypy
