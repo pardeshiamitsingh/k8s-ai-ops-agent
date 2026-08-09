@@ -1,1 +1,5 @@
-"""LLM module for k8s-ai-ops-agent."""
+from k8s_ai_ops.llm.factory import LLMFactory
+
+__all__ = [
+    "LLMFactory",
+]

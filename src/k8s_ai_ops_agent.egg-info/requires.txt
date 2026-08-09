@@ -5,6 +5,9 @@ pydantic-settings
 langchain
 langgraph
 langchain-openai
+langchain-ollama
+langchain-aws
+boto3
 kubernetes
 httpx
 structlog

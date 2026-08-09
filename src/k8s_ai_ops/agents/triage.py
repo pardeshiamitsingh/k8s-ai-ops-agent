@@ -1,38 +1,74 @@
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from k8s_ai_ops import llm
 from k8s_ai_ops.graph.state import AgentState
 from k8s_ai_ops.models.incident import IncidentAnalysis
 
 
-def triage_incident(state: AgentState) -> dict:
+SYSTEM_PROMPT = """
+You are a Kubernetes incident triage agent.
+
+Your job is to perform the initial classification
+of a Kubernetes incident.
+
+Determine:
+
+1. The type of incident.
+2. Whether further investigation is required.
+3. Initial technical hypotheses.
+4. Concise reasoning.
+
+Important rules:
+
+- Do not invent Kubernetes observations.
+- Do not claim that you inspected pods, logs,
+  events, metrics, or deployments.
+- Do not recommend remediation yet.
+- If information is insufficient, indicate that
+  investigation is required.
+- Return the result using the required structured
+  output schema.
+"""
+
+
+def triage_incident(
+    state: AgentState,
+    llm: BaseChatModel,
+) -> dict:
+
     incident = state["incident"]
+    print("========== TRIAGE DEBUG ==========")
+    print("LLM TYPE:", type(llm))
+    print("LLM MODULE:", type(llm).__module__)
+    print("LLM CLASS:", type(llm).__name__)
+    print("LLM MRO:", type(llm).mro())
+    print("HAS STRUCTURED:", hasattr(llm, "with_structured_output"))
+    print("===================================")
+    structured_llm = llm.with_structured_output(
+        IncidentAnalysis
+    )
 
-    description = incident.description.lower()
-
-    hypotheses = []
-
-    if "crash" in description or "crashloop" in description:
-        hypotheses.append("Application crash or CrashLoopBackOff")
-
-    if "memory" in description or "oom" in description:
-        hypotheses.append("Memory exhaustion or OOMKilled")
-
-    if "image" in description:
-        hypotheses.append("Container image or ImagePullBackOff")
-
-    if "connection" in description or "timeout" in description:
-        hypotheses.append("Dependency or network connectivity failure")
-
-    if not hypotheses:
-        hypotheses.append("Unknown application or infrastructure failure")
-
-    analysis = IncidentAnalysis(
-        incident_type="kubernetes_incident",
-        investigation_required=True,
-        initial_hypotheses=hypotheses,
-        reasoning=(
-            "Initial triage identified potential failure modes from "
-            "the incident description. Kubernetes investigation is required "
-            "to determine the root cause."
+    messages = [
+        SystemMessage(
+            content=SYSTEM_PROMPT,
         ),
+        HumanMessage(
+            content=f"""
+Service: {incident.service}
+
+Namespace: {incident.namespace}
+
+Severity: {incident.severity}
+
+Incident description:
+{incident.description}
+""",
+        ),
+    ]
+
+    analysis = structured_llm.invoke(
+        messages,
     )
 
     return {

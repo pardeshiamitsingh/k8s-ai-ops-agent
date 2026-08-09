@@ -3,14 +3,20 @@ name = "k8s-ai-ops-agent"
 version = "0.1.0"
 description = "Enterprise Agentic AI platform for Kubernetes incident investigation and remediation"
 requires-python = ">=3.12"
+
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pydantic",
     "pydantic-settings",
+
     "langchain",
     "langgraph",
     "langchain-openai",
+    "langchain-ollama",
+    "langchain-aws",
+
+    "boto3",
     "kubernetes",
     "httpx",
     "structlog",
@@ -23,13 +29,3 @@ dev = [
     "ruff",
     "mypy",
 ]
-
-[tool.setuptools]
-package-dir = { "" = "src" }
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"

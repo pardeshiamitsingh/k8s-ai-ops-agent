@@ -10,6 +10,7 @@ src/k8s_ai_ops/graph/__init__.py
 src/k8s_ai_ops/graph/state.py
 src/k8s_ai_ops/graph/workflow.py
 src/k8s_ai_ops/llm/__init__.py
+src/k8s_ai_ops/llm/azure_openai.py
 src/k8s_ai_ops/models/__init__.py
 src/k8s_ai_ops/models/incident.py
 src/k8s_ai_ops_agent.egg-info/PKG-INFO
