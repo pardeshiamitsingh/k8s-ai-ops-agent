@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -18,106 +19,126 @@ def investigate_incident(
 
     incident = state["incident"]
 
-    messages = state.get("messages", [])
+    namespace = incident.namespace
+    service = incident.service
 
-    if not messages:
+    # ---------------------------------------------------------
+    # 1. Get pods
+    # ---------------------------------------------------------
 
-        prompt = f"""
-You are a Kubernetes incident investigation agent.
-
-Your job is to investigate the incident using
-available Kubernetes tools.
-
-Incident:
-
-Service: {incident.service}
-Namespace: {incident.namespace}
-Severity: {incident.severity}
-Description: {incident.description}
-
-Available tools:
-
-1. get_pods(namespace)
-
-Use this to inspect:
-- pod phase
-- readiness
-- restart counts
-- container termination reasons
-- exit codes
-
-2. get_pod_events(namespace, pod_name)
-
-Use this to inspect:
-- OOMKilled
-- BackOff
-- CrashLoopBackOff
-- scheduling failures
-- image pull failures
-- probe failures
-- Kubernetes lifecycle events
-
-3. get_pod_logs(
-       namespace,
-       pod_name,
-       container,
-       tail_lines
-   )
-
-Use this to inspect:
-- application errors
-- exceptions
-- crashes
-- runtime failures
-
-Investigation rules:
-
-1. Start by inspecting the pods.
-
-2. If a pod appears unhealthy, restarting,
-   or has a termination reason, inspect its events.
-
-3. Inspect logs when they can provide additional
-   evidence about the failure.
-
-4. Do not assume Kubernetes observations.
-
-5. Do not claim that a tool was used unless
-   the tool was actually called.
-
-6. Distinguish observed evidence from hypotheses.
-
-7. Continue investigating when additional
-   evidence is necessary.
-
-8. Stop investigating only when sufficient
-   evidence has been collected to produce
-   a diagnosis.
-
-9. If the available evidence is insufficient,
-   explicitly state that the root cause is unknown.
-"""
-
-        messages = [
-            HumanMessage(
-                content=prompt,
-            )
-        ]
-
-    llm_with_tools = llm.bind_tools(
-        [
-            get_pods,
-            get_pod_events,
-            get_pod_logs,
-        ]
+    pods = get_pods.invoke(
+        {
+            "namespace": namespace,
+        }
     )
 
-    response = llm_with_tools.invoke(
-        messages
+    # ---------------------------------------------------------
+    # 2. Select pods relevant to the incident
+    #
+    # We don't ask the LLM to select them.
+    # We use the service name directly.
+    # ---------------------------------------------------------
+
+    relevant_pods = [
+        pod
+        for pod in pods
+        if service in pod.get("name", "")
+    ]
+
+    # If no pod name contains the service name,
+    # investigate all pods in the namespace.
+    if not relevant_pods:
+        relevant_pods = pods
+
+    # ---------------------------------------------------------
+    # 3. Get events and logs for relevant pods
+    # ---------------------------------------------------------
+
+    pod_events: dict[str, Any] = {}
+    pod_logs: dict[str, Any] = {}
+
+    for pod in relevant_pods:
+
+        pod_name = pod["name"]
+
+        # ---------------------------------------------
+        # Events
+        # ---------------------------------------------
+
+        events = get_pod_events.invoke(
+            {
+                "namespace": namespace,
+                "pod_name": pod_name,
+            }
+        )
+
+        pod_events[pod_name] = events
+
+        # ---------------------------------------------
+        # Logs
+        # ---------------------------------------------
+
+        containers = pod.get("containers", [])
+
+        for container in containers:
+
+            container_name = container.get("name")
+
+            if not container_name:
+                continue
+
+            logs = get_pod_logs.invoke(
+                {
+                    "namespace": namespace,
+                    "pod_name": pod_name,
+                    "container": container_name,
+                    "tail_lines": 100,
+                }
+            )
+
+            pod_logs[
+                f"{pod_name}/{container_name}"
+            ] = logs
+
+    # ---------------------------------------------------------
+    # 4. Build grounded evidence
+    # ---------------------------------------------------------
+
+    evidence = {
+        "incident": {
+            "service": service,
+            "namespace": namespace,
+            "severity": incident.severity,
+            "description": incident.description,
+        },
+        "pods": pods,
+        "relevant_pods": relevant_pods,
+        "pod_events": pod_events,
+        "pod_logs": pod_logs,
+    }
+
+    # ---------------------------------------------------------
+    # 5. Give ONLY observed evidence to the diagnosis agent
+    # ---------------------------------------------------------
+
+    evidence_message = HumanMessage(
+        content=(
+            "Kubernetes investigation results.\n\n"
+            "IMPORTANT:\n"
+            "The following data was collected directly from "
+            "Kubernetes tools.\n"
+            "Treat this as observed evidence.\n"
+            "Do not invent or modify Kubernetes observations.\n\n"
+            f"{json.dumps(evidence, indent=2, default=str)}"
+        )
     )
 
     return {
+        "investigation_results": [
+            evidence
+        ],
         "messages": [
-            response,
-        ]
+            evidence_message
+        ],
+        "investigation_complete": True,
     }

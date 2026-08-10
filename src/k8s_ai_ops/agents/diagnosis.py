@@ -11,29 +11,70 @@ def generate_diagnosis(
     llm: BaseChatModel,
 ) -> dict[str, Any]:
 
-    messages = state.get("messages", [])
+    incident = state["incident"]
 
-    prompt = """
-Based on the incident and all Kubernetes evidence collected,
-provide a concise incident diagnosis.
+    investigation_results = state.get(
+        "investigation_results",
+        [],
+    )
 
-Include:
+    prompt = f"""
+You are a Kubernetes incident diagnosis agent.
 
-1. Root cause or most likely cause
-2. Evidence supporting the conclusion
-3. Recommended next investigation step
-4. Whether human intervention is required
+Analyze the incident using ONLY the Kubernetes
+investigation evidence provided below.
 
-Do not invent information.
-Clearly distinguish observed facts from hypotheses.
+Incident:
+
+Service: {incident.service}
+Namespace: {incident.namespace}
+Severity: {incident.severity}
+Description: {incident.description}
+
+Investigation evidence:
+
+{investigation_results}
+
+Rules:
+
+1. Use only observed Kubernetes evidence.
+
+2. Do not invent pod names.
+
+3. Do not invent restart counts.
+
+4. Do not invent Kubernetes events.
+
+5. Do not invent log messages.
+
+6. Clearly distinguish:
+   - observed evidence
+   - hypotheses
+
+7. If the evidence is insufficient,
+   the root cause must be "Unknown".
+
+8. Do not claim that additional tools were
+   executed unless their results are present
+   in the evidence.
+
+Provide:
+
+- root cause or most likely cause
+- confidence
+- evidence
+- recommended next steps
+- whether human intervention is required
 """
 
     response = llm.invoke(
-        messages + [
-            HumanMessage(content=prompt)
+        [
+            HumanMessage(
+                content=prompt,
+            )
         ]
     )
 
     return {
-        "diagnosis": response.content
+        "diagnosis": response.content,
     }

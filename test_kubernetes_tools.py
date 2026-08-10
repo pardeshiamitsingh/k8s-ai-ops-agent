@@ -1,7 +1,9 @@
 from unittest.mock import MagicMock, patch
 
-from k8s_ai_ops.tools.kubernetes import KubernetesTools
 from kubernetes.config.config_exception import ConfigException
+
+from k8s_ai_ops.tools.kubernetes import KubernetesTools
+
 
 @patch(
     "k8s_ai_ops.tools.kubernetes.config.load_kube_config"
@@ -22,6 +24,8 @@ def test_get_pods(
     mock_kube_config,
 ):
 
+    # Simulate running outside Kubernetes.
+    # This should cause fallback to ~/.kube/config.
     mock_incluster.side_effect = ConfigException()
 
     pod = MagicMock()
@@ -39,6 +43,10 @@ def test_get_pods(
     container.name = "payment-service"
     container.restart_count = 3
     container.ready = True
+
+    # Important: explicitly specify that there is
+    # no previous container termination.
+    container.last_state = None
 
     pod.status.container_statuses = [
         container
@@ -64,4 +72,8 @@ def test_get_pods(
     assert result[0]["phase"] == "Running"
     assert result[0]["node"] == "node-1"
 
+    assert result[0]["containers"][0]["name"] == "payment-service"
     assert result[0]["containers"][0]["restart_count"] == 3
+    assert result[0]["containers"][0]["ready"] is True
+    assert result[0]["containers"][0]["termination_reason"] is None
+    assert result[0]["containers"][0]["exit_code"] is None
