@@ -112,3 +112,121 @@ def get_pods(
     return kubernetes.get_pods(
         namespace=namespace
     )
+
+def get_pod_logs(
+    self,
+    namespace: str,
+    pod_name: str,
+    container: str | None = None,
+    tail_lines: int = 100,
+) -> str:
+    """
+    Return recent logs from a Kubernetes pod.
+
+    Args:
+        namespace: Kubernetes namespace.
+        pod_name: Name of the pod.
+        container: Optional container name.
+        tail_lines: Number of recent log lines to retrieve.
+    """
+
+    return self.core_api.read_namespaced_pod_log(
+        name=pod_name,
+        namespace=namespace,
+        container=container,
+        tail_lines=tail_lines,
+    )
+
+@tool
+def get_pod_logs(
+    namespace: str,
+    pod_name: str,
+    container: str | None = None,
+    tail_lines: int = 100,
+) -> str:
+    """
+    Get recent logs from a Kubernetes pod.
+
+    Use this tool when investigating application errors,
+    crashes, exceptions, or other runtime failures.
+    """
+
+    kubernetes = KubernetesTools()
+
+    return kubernetes.get_pod_logs(
+        namespace=namespace,
+        pod_name=pod_name,
+        container=container,
+        tail_lines=tail_lines,
+    )
+
+
+def get_pod_events(
+    self,
+    namespace: str,
+    pod_name: str,
+) -> list[dict[str, Any]]:
+    """
+    Return Kubernetes events associated with a pod.
+
+    Args:
+        namespace: Kubernetes namespace.
+        pod_name: Name of the pod.
+    """
+
+    events = self.core_api.list_namespaced_event(
+        namespace=namespace,
+        field_selector=f"involvedObject.name={pod_name}",
+    )
+
+    result = []
+
+    for event in events.items:
+        result.append(
+            {
+                "type": event.type,
+                "reason": event.reason,
+                "message": event.message,
+                "count": event.count,
+                "first_timestamp": (
+                    event.first_timestamp.isoformat()
+                    if event.first_timestamp
+                    else None
+                ),
+                "last_timestamp": (
+                    event.last_timestamp.isoformat()
+                    if event.last_timestamp
+                    else None
+                ),
+                "source": (
+                    event.source.component
+                    if event.source
+                    else None
+                ),
+            }
+        )
+
+    return result
+
+
+
+@tool
+def get_pod_events(
+    namespace: str,
+    pod_name: str,
+) -> list[dict[str, Any]]:
+    """
+    Get Kubernetes events associated with a pod.
+
+    Use this tool when investigating pod failures,
+    restarts, CrashLoopBackOff, OOMKilled events,
+    scheduling failures, image pull failures,
+    probe failures, or other Kubernetes lifecycle issues.
+    """
+
+    kubernetes = KubernetesTools()
+
+    return kubernetes.get_pod_events(
+        namespace=namespace,
+        pod_name=pod_name,
+    )
