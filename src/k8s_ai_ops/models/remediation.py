@@ -24,4 +24,4 @@ class RemediationApproval(BaseModel):
     approved: bool
     approved_by: str
     reason: str | None = None
-    approved_at: datetime
+    approved_at: datetime   

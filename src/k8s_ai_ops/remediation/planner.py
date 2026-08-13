@@ -11,8 +11,8 @@ class RemediationPlanner:
 
     Converts a diagnosis into a proposed remediation plan.
 
-    This class does NOT modify Kubernetes resources.
-    It only proposes actions.
+    IMPORTANT:
+    This class NEVER modifies Kubernetes resources.
     """
 
     def plan(
@@ -27,6 +27,7 @@ class RemediationPlanner:
         # --------------------------------------------------
 
         if root_cause == "OOMKilled":
+
             return RemediationPlan(
                 root_cause=root_cause,
                 actions=[
@@ -56,6 +57,7 @@ class RemediationPlanner:
         # --------------------------------------------------
 
         if root_cause == "CrashLoopBackOff":
+
             return RemediationPlan(
                 root_cause=root_cause,
                 actions=[
@@ -85,6 +87,7 @@ class RemediationPlanner:
         # --------------------------------------------------
 
         if root_cause == "Application error":
+
             return RemediationPlan(
                 root_cause=root_cause,
                 actions=[
@@ -110,10 +113,11 @@ class RemediationPlanner:
             )
 
         # --------------------------------------------------
-        # Container image pull failure
+        # Image pull failure
         # --------------------------------------------------
 
         if root_cause == "Container image pull failure":
+
             return RemediationPlan(
                 root_cause=root_cause,
                 actions=[
@@ -140,10 +144,11 @@ class RemediationPlanner:
             )
 
         # --------------------------------------------------
-        # Kubernetes health probe failure
+        # Probe failure
         # --------------------------------------------------
 
         if root_cause == "Kubernetes health probe failure":
+
             return RemediationPlan(
                 root_cause=root_cause,
                 actions=[

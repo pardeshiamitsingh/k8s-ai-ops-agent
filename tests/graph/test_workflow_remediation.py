@@ -6,7 +6,7 @@ def test_remediation_planner_creates_plan():
 
     diagnosis = Diagnosis(
         root_cause="OOMKilled",
-        confidence="high",
+        confidence=0.95,
         evidence=[
             "Pod payment-service was OOMKilled."
         ],

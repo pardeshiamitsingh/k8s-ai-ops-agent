@@ -13,7 +13,7 @@ LLMProvider = Literal[
 
 
 class LLMSettings(BaseModel):
-    provider: LLMProvider = "fake"
+    provider: LLMProvider = "ollama"
 
     model: str | None = None
     temperature: float = 0.0
@@ -40,7 +40,7 @@ class AppSettings(BaseSettings):
     and .env.
     """
 
-    llm_provider: LLMProvider = "fake"
+    llm_provider: LLMProvider = "ollama"
 
     llm_model: str | None = None
     llm_temperature: float = 0.0

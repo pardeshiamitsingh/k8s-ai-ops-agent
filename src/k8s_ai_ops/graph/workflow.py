@@ -1,4 +1,5 @@
 from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from k8s_ai_ops.agents.triage import triage_incident
@@ -9,8 +10,14 @@ from k8s_ai_ops.investigation.deterministic import (
 from k8s_ai_ops.investigation.diagnosis import (
     DeterministicDiagnosis,
 )
+from k8s_ai_ops.remediation.approval_node import (
+    remediation_approval_node,
+)
 from k8s_ai_ops.remediation.planner import (
     RemediationPlanner,
+)
+from k8s_ai_ops.remediation.service import (
+    RemediationService,
 )
 
 
@@ -18,75 +25,102 @@ def build_incident_graph(
     llm: BaseChatModel,
 ):
     """
-    Build the Kubernetes incident investigation graph.
+    Build the complete Kubernetes incident workflow.
 
     Architecture:
 
         START
           |
           v
-        triage              <- LLM
+        triage
           |
           v
-        investigator        <- deterministic
+      investigator
           |
           v
-        diagnosis           <- deterministic
+       diagnosis
           |
           v
-        planner             <- deterministic
+        planner
+          |
+          v
+        approval
+          |
+          | interrupt()
+          |
+          X
+       HUMAN
+          |
+          | Command(resume=...)
+          |
+          +----------------------+
+          |                      |
+      approved                rejected
+          |                      |
+          v                      v
+      remediation               END
           |
           v
          END
 
-    Responsibilities:
+    Important:
 
-    1. Triage
-       Understand and classify the incoming incident using the LLM.
-
-    2. Investigation
-       Collect Kubernetes evidence using deterministic logic.
-
-    3. Diagnosis
-       Determine the most likely root cause from observed evidence.
-
-    4. Remediation planning
-       Convert the diagnosis into a proposed remediation plan.
-
-    IMPORTANT:
-    This graph does NOT execute remediation.
-
-    Kubernetes mutations must happen separately through
-    RemediationExecutor after explicit human approval.
+    - Triage may use an LLM.
+    - Investigation is deterministic.
+    - Diagnosis is deterministic.
+    - Planning is deterministic.
+    - Approval is a LangGraph interrupt.
+    - Remediation executes only after approval.
+    - Rejection terminates the workflow.
+    - InMemorySaver allows pause/resume using thread_id.
     """
 
     graph = StateGraph(AgentState)
 
-    # ==========================================================
+    # ==================================================
     # COMPONENTS
-    # ==========================================================
+    # ==================================================
 
     investigator = DeterministicInvestigator()
     diagnosis_engine = DeterministicDiagnosis()
-    remediation_planner = RemediationPlanner()
+    planner = RemediationPlanner()
+    remediation_service = RemediationService()
 
-    # ==========================================================
+    # ==================================================
     # TRIAGE
-    # ==========================================================
-    #
-    # LLM understands the incoming incident and produces the
-    # normalized incident information used by the rest of the
-    # workflow.
-    #
-    # ==========================================================
+    # ==================================================
 
     def triage_node(
         state: AgentState,
     ) -> dict:
+        """
+        Run LLM-driven triage.
 
-        return triage_incident(
+        triage_incident() must return a normal
+        serializable dictionary/Pydantic model.
+        """
+
+        result = triage_incident(
             state,
             llm,
+        )
+
+        if result is None:
+            return {}
+
+        if isinstance(result, dict):
+            return result
+
+        if hasattr(
+            result,
+            "model_dump",
+        ):
+            return result.model_dump()
+
+        raise TypeError(
+            "triage_incident() must return "
+            "a dict or Pydantic model. "
+            f"Received: {type(result)!r}"
         )
 
     graph.add_node(
@@ -94,26 +128,16 @@ def build_incident_graph(
         triage_node,
     )
 
-    # ==========================================================
+    # ==================================================
     # INVESTIGATION
-    # ==========================================================
-    #
-    # Deterministic Kubernetes investigation.
-    #
-    # No LLM is involved here.
-    #
-    # The investigator collects:
-    #
-    #   - pods
-    #   - relevant pods
-    #   - Kubernetes events
-    #   - container logs
-    #
-    # ==========================================================
+    # ==================================================
 
     def investigate_node(
         state: AgentState,
     ) -> dict:
+        """
+        Collect deterministic Kubernetes evidence.
+        """
 
         incident = state["incident"]
 
@@ -131,26 +155,17 @@ def build_incident_graph(
         investigate_node,
     )
 
-    # ==========================================================
+    # ==================================================
     # DIAGNOSIS
-    # ==========================================================
-    #
-    # Determine root cause using only observed evidence.
-    #
-    # Example:
-    #
-    #   OOMKilled
-    #   CrashLoopBackOff
-    #   ImagePullBackOff
-    #   Probe failure
-    #   Application error
-    #   Unknown
-    #
-    # ==========================================================
+    # ==================================================
 
     def diagnosis_node(
         state: AgentState,
     ) -> dict:
+        """
+        Convert raw investigation evidence into
+        deterministic diagnosis.
+        """
 
         investigation = state.get(
             "investigation_results",
@@ -170,35 +185,20 @@ def build_incident_graph(
         diagnosis_node,
     )
 
-    # ==========================================================
+    # ==================================================
     # REMEDIATION PLANNER
-    # ==========================================================
-    #
-    # Converts the diagnosis into proposed remediation actions.
-    #
-    # IMPORTANT:
-    #
-    # The planner ONLY proposes actions.
-    #
-    # It does NOT:
-    #
-    #   - patch Kubernetes
-    #   - restart pods
-    #   - scale deployments
-    #   - modify resources
-    #
-    # Those operations belong to RemediationExecutor and require
-    # explicit approval.
-    #
-    # ==========================================================
+    # ==================================================
 
     def planner_node(
         state: AgentState,
     ) -> dict:
+        """
+        Generate deterministic remediation plan.
+        """
 
         diagnosis = state["diagnosis"]
 
-        plan = remediation_planner.plan(
+        plan = planner.plan(
             diagnosis
         )
 
@@ -211,9 +211,88 @@ def build_incident_graph(
         planner_node,
     )
 
-    # ==========================================================
-    # GRAPH EDGES
-    # ==========================================================
+    # ==================================================
+    # HUMAN APPROVAL
+    # ==================================================
+
+    graph.add_node(
+        "approval",
+        remediation_approval_node,
+    )
+
+    # ==================================================
+    # APPROVAL ROUTING
+    # ==================================================
+
+    def route_after_approval(
+        state: AgentState,
+    ) -> str:
+        """
+        Route the workflow based on human approval.
+
+        approved=True:
+            approval -> remediation
+
+        approved=False:
+            approval -> END
+
+        Default behavior is deny.
+        """
+
+        if state.get(
+            "remediation_approved",
+            False,
+        ):
+            return "remediation"
+
+        return END
+
+    # ==================================================
+    # REMEDIATION
+    # ==================================================
+
+    def remediation_node(
+        state: AgentState,
+    ) -> dict:
+        """
+        Execute remediation.
+
+        This is the ONLY node that performs
+        Kubernetes mutation.
+
+        The approved flag is passed to the
+        remediation service as a second
+        safety boundary.
+        """
+
+        plan = state["remediation_plan"]
+        incident = state["incident"]
+
+        approved = state.get(
+            "remediation_approved",
+            False,
+        )
+
+        result = remediation_service.execute(
+            plan,
+            approved=approved,
+            namespace=incident.namespace,
+            service=incident.service,
+        )
+
+        return {
+            "remediation_result": result,
+            "remediation_complete": True,
+        }
+
+    graph.add_node(
+        "remediation",
+        remediation_node,
+    )
+
+    # ==================================================
+    # EDGES
+    # ==================================================
 
     graph.add_edge(
         START,
@@ -237,11 +316,38 @@ def build_incident_graph(
 
     graph.add_edge(
         "planner",
+        "approval",
+    )
+
+    # IMPORTANT:
+    #
+    # Do NOT use:
+    #
+    # graph.add_edge("approval", "remediation")
+    #
+    # because that would execute remediation even
+    # after human rejection.
+
+    graph.add_conditional_edges(
+        "approval",
+        route_after_approval,
+        {
+            "remediation": "remediation",
+            END: END,
+        },
+    )
+
+    graph.add_edge(
+        "remediation",
         END,
     )
 
-    # ==========================================================
-    # COMPILE
-    # ==========================================================
+    # ==================================================
+    # CHECKPOINTER
+    # ==================================================
 
-    return graph.compile()
+    checkpointer = InMemorySaver()
+
+    return graph.compile(
+        checkpointer=checkpointer,
+    )

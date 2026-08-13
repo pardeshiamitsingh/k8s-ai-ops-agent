@@ -4,6 +4,20 @@ from k8s_ai_ops.models.diagnosis import Diagnosis
 
 
 class DeterministicDiagnosis:
+    """
+    Produces a deterministic diagnosis from Kubernetes
+    investigation evidence.
+
+    Confidence is represented numerically:
+
+        0.95 -> high confidence
+        0.75 -> medium confidence
+        0.30 -> low confidence
+    """
+
+    HIGH_CONFIDENCE = 0.95
+    MEDIUM_CONFIDENCE = 0.75
+    LOW_CONFIDENCE = 0.30
 
     def diagnose(
         self,
@@ -32,7 +46,7 @@ class DeterministicDiagnosis:
 
                     return Diagnosis(
                         root_cause="OOMKilled",
-                        confidence="high",
+                        confidence=self.HIGH_CONFIDENCE,
                         evidence=evidence,
                         recommended_next_steps=[
                             "Increase the memory limit for the affected container.",
@@ -64,8 +78,10 @@ class DeterministicDiagnosis:
                         evidence.append(log_match)
 
                         return Diagnosis(
-                            root_cause="CrashLoopBackOff due to application error",
-                            confidence="high",
+                            root_cause=(
+                                "CrashLoopBackOff due to application error"
+                            ),
+                            confidence=self.HIGH_CONFIDENCE,
                             evidence=evidence,
                             recommended_next_steps=[
                                 "Inspect the application error causing the container to exit.",
@@ -76,7 +92,7 @@ class DeterministicDiagnosis:
 
                     return Diagnosis(
                         root_cause="CrashLoopBackOff",
-                        confidence="medium",
+                        confidence=self.MEDIUM_CONFIDENCE,
                         evidence=evidence,
                         recommended_next_steps=[
                             "Inspect container logs for the crash reason.",
@@ -104,7 +120,7 @@ class DeterministicDiagnosis:
 
                     return Diagnosis(
                         root_cause="Container image pull failure",
-                        confidence="high",
+                        confidence=self.HIGH_CONFIDENCE,
                         evidence=evidence,
                         recommended_next_steps=[
                             "Verify the container image name and tag.",
@@ -133,7 +149,7 @@ class DeterministicDiagnosis:
 
                     return Diagnosis(
                         root_cause="Kubernetes health probe failure",
-                        confidence="high",
+                        confidence=self.HIGH_CONFIDENCE,
                         evidence=evidence,
                         recommended_next_steps=[
                             "Inspect the failing probe configuration.",
@@ -156,7 +172,7 @@ class DeterministicDiagnosis:
 
                 return Diagnosis(
                     root_cause="Pod scheduling failure",
-                    confidence="medium",
+                    confidence=self.MEDIUM_CONFIDENCE,
                     evidence=evidence,
                     recommended_next_steps=[
                         "Inspect Kubernetes scheduling events.",
@@ -179,7 +195,7 @@ class DeterministicDiagnosis:
 
                 return Diagnosis(
                     root_cause="Application error",
-                    confidence="medium",
+                    confidence=self.MEDIUM_CONFIDENCE,
                     evidence=evidence,
                     recommended_next_steps=[
                         "Inspect the application stack trace.",
@@ -215,16 +231,18 @@ class DeterministicDiagnosis:
             "Collected evidence does not identify a definitive failure."
         )
 
-        next_steps.extend([
-            "Verify whether the reported restart condition is still occurring.",
-            "Check historical pod restart counts.",
-            "Inspect Kubernetes events over a longer time window.",
-            "Collect application and container metrics.",
-        ])
+        next_steps.extend(
+            [
+                "Verify whether the reported restart condition is still occurring.",
+                "Check historical pod restart counts.",
+                "Inspect Kubernetes events over a longer time window.",
+                "Collect application and container metrics.",
+            ]
+        )
 
         return Diagnosis(
             root_cause="Unknown",
-            confidence="low",
+            confidence=self.LOW_CONFIDENCE,
             evidence=evidence,
             recommended_next_steps=next_steps,
             human_intervention_required=True,
@@ -235,16 +253,18 @@ class DeterministicDiagnosis:
     # =============================================================
 
     @staticmethod
-    def _event_text(event: Any) -> str:
+    def _event_text(
+        event: Any,
+    ) -> str:
         """
-        Normalize different event representations.
+        Normalize different Kubernetes event representations.
         """
 
         if isinstance(event, str):
             return event
 
         if isinstance(event, dict):
-            parts = []
+            parts: list[str] = []
 
             for key in (
                 "type",
@@ -268,11 +288,16 @@ class DeterministicDiagnosis:
 
         for key, logs in pod_logs.items():
 
-            if not key.startswith(f"{pod_name}/"):
+            if not key.startswith(
+                f"{pod_name}/"
+            ):
                 continue
 
-            failure = DeterministicDiagnosis._detect_application_failure(
-                logs
+            failure = (
+                DeterministicDiagnosis
+                ._detect_application_failure(
+                    logs
+                )
             )
 
             if failure:

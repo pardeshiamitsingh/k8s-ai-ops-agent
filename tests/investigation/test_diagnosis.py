@@ -24,7 +24,7 @@ def test_oom_killed():
     )
 
     assert diagnosis.root_cause == "OOMKilled"
-    assert diagnosis.confidence == "high"
+    assert diagnosis.confidence == 0.95
     assert diagnosis.human_intervention_required is False
 
 
@@ -57,7 +57,7 @@ def test_crash_loop_with_application_error():
         == "CrashLoopBackOff due to application error"
     )
 
-    assert diagnosis.confidence == "high"
+    assert diagnosis.confidence == 0.95
 
 
 def test_image_pull_failure():
@@ -80,7 +80,7 @@ def test_image_pull_failure():
     )
 
     assert diagnosis.root_cause == "Container image pull failure"
-    assert diagnosis.confidence == "high"
+    assert diagnosis.confidence == 0.95
 
 
 def test_probe_failure():
@@ -146,7 +146,7 @@ def test_application_error_in_logs():
     )
 
     assert diagnosis.root_cause == "Application error"
-    assert diagnosis.confidence == "medium"
+    assert diagnosis.confidence == 0.75
 
 
 def test_unknown_when_evidence_is_insufficient():
@@ -182,5 +182,5 @@ def test_unknown_when_evidence_is_insufficient():
     )
 
     assert diagnosis.root_cause == "Unknown"
-    assert diagnosis.confidence == "low"
+    assert diagnosis.confidence == 0.30
     assert diagnosis.human_intervention_required is True

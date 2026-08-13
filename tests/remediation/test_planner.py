@@ -12,7 +12,7 @@ def planner():
 def make_diagnosis(root_cause: str) -> Diagnosis:
     return Diagnosis(
         root_cause=root_cause,
-        confidence="high",
+        confidence=0.95,
         evidence=["Observed Kubernetes evidence"],
         recommended_next_steps=[],
         human_intervention_required=False,
