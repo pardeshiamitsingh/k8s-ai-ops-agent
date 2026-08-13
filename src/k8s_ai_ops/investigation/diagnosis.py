@@ -8,7 +8,7 @@ class DeterministicDiagnosis:
     Produces a deterministic diagnosis from Kubernetes
     investigation evidence.
 
-    Confidence is represented numerically:
+    Confidence:
 
         0.95 -> high confidence
         0.75 -> medium confidence
@@ -19,22 +19,24 @@ class DeterministicDiagnosis:
     MEDIUM_CONFIDENCE = 0.75
     LOW_CONFIDENCE = 0.30
 
+    RESTART_THRESHOLD = 3
+
     def diagnose(
         self,
         investigation: dict[str, Any],
     ) -> Diagnosis:
 
         evidence: list[str] = []
-        next_steps: list[str] = []
 
         pods = investigation.get("pods", [])
         relevant_pods = investigation.get("relevant_pods", [])
         pod_events = investigation.get("pod_events", {})
         pod_logs = investigation.get("pod_logs", {})
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 1. OOMKilled
-        # ---------------------------------------------------------
+        # =========================================================
+
         for pod_name, events in pod_events.items():
             for event in events:
                 message = self._event_text(event)
@@ -56,9 +58,10 @@ class DeterministicDiagnosis:
                         human_intervention_required=False,
                     )
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 2. CrashLoopBackOff
-        # ---------------------------------------------------------
+        # =========================================================
+
         for pod_name, events in pod_events.items():
             for event in events:
                 message = self._event_text(event)
@@ -68,7 +71,6 @@ class DeterministicDiagnosis:
                         f"Pod {pod_name} reported CrashLoopBackOff."
                     )
 
-                    # Look for application evidence in logs.
                     log_match = self._find_log_failure(
                         pod_name,
                         pod_logs,
@@ -77,34 +79,138 @@ class DeterministicDiagnosis:
                     if log_match:
                         evidence.append(log_match)
 
-                        return Diagnosis(
-                            root_cause=(
-                                "CrashLoopBackOff due to application error"
-                            ),
-                            confidence=self.HIGH_CONFIDENCE,
-                            evidence=evidence,
-                            recommended_next_steps=[
-                                "Inspect the application error causing the container to exit.",
-                                "Fix the application failure and redeploy.",
-                            ],
-                            human_intervention_required=False,
-                        )
-
                     return Diagnosis(
                         root_cause="CrashLoopBackOff",
-                        confidence=self.MEDIUM_CONFIDENCE,
+                        confidence=self.HIGH_CONFIDENCE,
                         evidence=evidence,
                         recommended_next_steps=[
-                            "Inspect container logs for the crash reason.",
-                            "Inspect the previous container instance logs.",
-                            "Review the pod configuration and startup command.",
+                            "Inspect the previous container logs.",
+                            "Identify the application or startup failure.",
+                            "Restart the affected workload after human approval.",
                         ],
-                        human_intervention_required=False,
+                        human_intervention_required=True,
                     )
 
-        # ---------------------------------------------------------
-        # 3. ImagePullBackOff / ErrImagePull
-        # ---------------------------------------------------------
+        # =========================================================
+        # 3. Repeated container crashes / BackOff
+        #
+        # Kubernetes may report:
+        #
+        #   BackOff restarting failed container
+        #
+        # instead of explicitly reporting CrashLoopBackOff.
+        #
+        # =========================================================
+
+        for pod_name, events in pod_events.items():
+
+            has_backoff = False
+            backoff_message = None
+            backoff_count = None
+
+            for event in events:
+                message = self._event_text(event)
+
+                if "BackOff" in message:
+                    has_backoff = True
+                    backoff_message = message
+
+                    if isinstance(event, dict):
+                        backoff_count = event.get("count")
+
+            if not has_backoff:
+                continue
+
+            pod = self._find_pod(
+                pod_name,
+                relevant_pods or pods,
+            )
+
+            if not pod:
+                continue
+
+            containers = pod.get("containers", [])
+
+            for container in containers:
+
+                restart_count = container.get(
+                    "restart_count",
+                    0,
+                )
+
+                ready = container.get(
+                    "ready",
+                    True,
+                )
+
+                termination_reason = container.get(
+                    "termination_reason"
+                )
+
+                exit_code = container.get(
+                    "exit_code"
+                )
+
+                if (
+                    restart_count >= self.RESTART_THRESHOLD
+                    and not ready
+                    and termination_reason == "Error"
+                ):
+                    container_name = container.get(
+                        "name",
+                        "unknown",
+                    )
+
+                    evidence.append(
+                        f"Pod {pod_name} has container "
+                        f"{container_name} repeatedly failing."
+                    )
+
+                    evidence.append(
+                        f"Container {container_name}: "
+                        f"restart_count={restart_count}, "
+                        f"ready={ready}, "
+                        f"termination_reason="
+                        f"{termination_reason}, "
+                        f"exit_code={exit_code}."
+                    )
+
+                    if backoff_message:
+                        evidence.append(
+                            f"Kubernetes event: "
+                            f"{backoff_message}"
+                        )
+
+                    if backoff_count is not None:
+                        evidence.append(
+                            f"BackOff event count="
+                            f"{backoff_count}."
+                        )
+
+                    log_match = self._find_log_failure(
+                        pod_name,
+                        pod_logs,
+                    )
+
+                    if log_match:
+                        evidence.append(log_match)
+
+                    return Diagnosis(
+                        root_cause="Container repeatedly crashing",
+                        confidence=self.HIGH_CONFIDENCE,
+                        evidence=evidence,
+                        recommended_next_steps=[
+                            "Inspect the failing container logs.",
+                            "Verify the container startup command and configuration.",
+                            "Restart the affected workload after human approval.",
+                        ],
+                        human_intervention_required=True,
+                    )
+
+        # =========================================================
+        # 4. ImagePullBackOff / ErrImagePull
+        # =========================================================
+
         for pod_name, events in pod_events.items():
             for event in events:
                 message = self._event_text(event)
@@ -130,9 +236,10 @@ class DeterministicDiagnosis:
                         human_intervention_required=False,
                     )
 
-        # ---------------------------------------------------------
-        # 4. Probe failures
-        # ---------------------------------------------------------
+        # =========================================================
+        # 5. Probe failures
+        # =========================================================
+
         for pod_name, events in pod_events.items():
             for event in events:
                 message = self._event_text(event).lower()
@@ -159,12 +266,17 @@ class DeterministicDiagnosis:
                         human_intervention_required=False,
                     )
 
-        # ---------------------------------------------------------
-        # 5. Scheduling failures / Pending pods
-        # ---------------------------------------------------------
+        # =========================================================
+        # 6. Scheduling failures / Pending pods
+        # =========================================================
+
         for pod in pods:
             if pod.get("phase") == "Pending":
-                pod_name = pod.get("name", "unknown")
+
+                pod_name = pod.get(
+                    "name",
+                    "unknown",
+                )
 
                 evidence.append(
                     f"Pod {pod_name} is Pending."
@@ -182,15 +294,20 @@ class DeterministicDiagnosis:
                     human_intervention_required=False,
                 )
 
-        # ---------------------------------------------------------
-        # 6. Application errors in logs
-        # ---------------------------------------------------------
+        # =========================================================
+        # 7. Application errors in logs
+        # =========================================================
+
         for key, logs in pod_logs.items():
-            failure = self._detect_application_failure(logs)
+
+            failure = self._detect_application_failure(
+                logs
+            )
 
             if failure:
                 evidence.append(
-                    f"Application failure detected in {key}: {failure}"
+                    f"Application failure detected in "
+                    f"{key}: {failure}"
                 )
 
                 return Diagnosis(
@@ -204,47 +321,59 @@ class DeterministicDiagnosis:
                     human_intervention_required=False,
                 )
 
-        # ---------------------------------------------------------
-        # 7. Healthy pods / insufficient evidence
-        # ---------------------------------------------------------
+        # =========================================================
+        # 8. Insufficient evidence
+        # =========================================================
+
         if pods:
+
             for pod in relevant_pods or pods:
-                pod_name = pod.get("name", "unknown")
+
+                pod_name = pod.get(
+                    "name",
+                    "unknown",
+                )
+
                 phase = pod.get("phase")
 
                 evidence.append(
-                    f"Pod {pod_name} is currently in phase {phase}."
+                    f"Pod {pod_name} is currently "
+                    f"in phase {phase}."
                 )
 
-                for container in pod.get("containers", []):
+                for container in pod.get(
+                    "containers",
+                    [],
+                ):
                     evidence.append(
-                        f"Container {container.get('name')} in pod "
-                        f"{pod_name}: "
-                        f"restart_count={container.get('restart_count')}, "
-                        f"ready={container.get('ready')}, "
+                        f"Container "
+                        f"{container.get('name')} "
+                        f"in pod {pod_name}: "
+                        f"restart_count="
+                        f"{container.get('restart_count')}, "
+                        f"ready="
+                        f"{container.get('ready')}, "
                         f"termination_reason="
                         f"{container.get('termination_reason')}, "
-                        f"exit_code={container.get('exit_code')}."
+                        f"exit_code="
+                        f"{container.get('exit_code')}."
                     )
 
         evidence.append(
-            "Collected evidence does not identify a definitive failure."
-        )
-
-        next_steps.extend(
-            [
-                "Verify whether the reported restart condition is still occurring.",
-                "Check historical pod restart counts.",
-                "Inspect Kubernetes events over a longer time window.",
-                "Collect application and container metrics.",
-            ]
+            "Collected evidence does not identify "
+            "a definitive failure."
         )
 
         return Diagnosis(
             root_cause="Unknown",
             confidence=self.LOW_CONFIDENCE,
             evidence=evidence,
-            recommended_next_steps=next_steps,
+            recommended_next_steps=[
+                "Verify whether the reported restart condition is still occurring.",
+                "Check historical pod restart counts.",
+                "Inspect Kubernetes events over a longer time window.",
+                "Collect application and container metrics.",
+            ],
             human_intervention_required=True,
         )
 
@@ -253,17 +382,27 @@ class DeterministicDiagnosis:
     # =============================================================
 
     @staticmethod
+    def _find_pod(
+        pod_name: str,
+        pods: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+
+        for pod in pods:
+            if pod.get("name") == pod_name:
+                return pod
+
+        return None
+
+    @staticmethod
     def _event_text(
         event: Any,
     ) -> str:
-        """
-        Normalize different Kubernetes event representations.
-        """
 
         if isinstance(event, str):
             return event
 
         if isinstance(event, dict):
+
             parts: list[str] = []
 
             for key in (
@@ -274,7 +413,9 @@ class DeterministicDiagnosis:
                 value = event.get(key)
 
                 if value:
-                    parts.append(str(value))
+                    parts.append(
+                        str(value)
+                    )
 
             return " ".join(parts)
 
@@ -302,9 +443,26 @@ class DeterministicDiagnosis:
 
             if failure:
                 return (
-                    f"Application failure detected in {key}: "
-                    f"{failure}"
+                    f"Application failure detected "
+                    f"in {key}: {failure}"
                 )
+
+            # Simple generic crash indication.
+            if logs is not None:
+
+                if isinstance(logs, bytes):
+                    text = logs.decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                else:
+                    text = str(logs)
+
+                if "crashing" in text.lower():
+                    return (
+                        f"Container logs for {key} "
+                        f"contain a crash indication."
+                    )
 
         return None
 
@@ -339,6 +497,7 @@ class DeterministicDiagnosis:
         ]
 
         for indicator in indicators:
+
             if indicator.lower() in logs.lower():
                 return indicator
 

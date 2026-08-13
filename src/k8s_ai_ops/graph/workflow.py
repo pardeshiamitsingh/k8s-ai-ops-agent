@@ -25,55 +25,57 @@ def build_incident_graph(
     llm: BaseChatModel,
 ):
     """
-    Build the complete Kubernetes incident workflow.
+    Build the complete Kubernetes AIOps incident workflow.
 
-    Architecture:
+    Workflow:
 
         START
           |
           v
-        triage
+        TRIAGE
           |
           v
-      investigator
+      INVESTIGATOR
           |
           v
-       diagnosis
+       DIAGNOSIS
           |
           v
-        planner
+        PLANNER
           |
           v
-        approval
+       APPROVAL
           |
           | interrupt()
           |
           X
-       HUMAN
+      HUMAN APPROVAL
           |
-          | Command(resume=...)
-          |
-          +----------------------+
-          |                      |
-      approved                rejected
-          |                      |
-          v                      v
-      remediation               END
-          |
-          v
-         END
+       +--+--+
+       |     |
+      YES    NO
+       |     |
+       v     v
+    REMEDIATION  END
+       |
+       v
+      END
 
-    Important:
+    Design principles:
 
     - Triage may use an LLM.
     - Investigation is deterministic.
     - Diagnosis is deterministic.
-    - Planning is deterministic.
-    - Approval is a LangGraph interrupt.
-    - Remediation executes only after approval.
+    - Remediation planning is deterministic.
+    - Human approval is handled using LangGraph interrupt().
+    - Kubernetes mutation happens only in the remediation node.
     - Rejection terminates the workflow.
-    - InMemorySaver allows pause/resume using thread_id.
+    - InMemorySaver provides checkpointing for the POC.
     """
+
+    # ==================================================
+    # GRAPH
+    # ==================================================
 
     graph = StateGraph(AgentState)
 
@@ -82,8 +84,11 @@ def build_incident_graph(
     # ==================================================
 
     investigator = DeterministicInvestigator()
+
     diagnosis_engine = DeterministicDiagnosis()
+
     planner = RemediationPlanner()
+
     remediation_service = RemediationService()
 
     # ==================================================
@@ -94,10 +99,11 @@ def build_incident_graph(
         state: AgentState,
     ) -> dict:
         """
-        Run LLM-driven triage.
+        Run LLM-driven incident triage.
 
-        triage_incident() must return a normal
-        serializable dictionary/Pydantic model.
+        The triage agent analyzes the incident and
+        determines whether further investigation is
+        required.
         """
 
         result = triage_incident(
@@ -108,14 +114,19 @@ def build_incident_graph(
         if result is None:
             return {}
 
-        if isinstance(result, dict):
-            return result
-
+        # Pydantic model
         if hasattr(
             result,
             "model_dump",
         ):
             return result.model_dump()
+
+        # Normal dictionary
+        if isinstance(
+            result,
+            dict,
+        ):
+            return result
 
         raise TypeError(
             "triage_incident() must return "
@@ -136,7 +147,10 @@ def build_incident_graph(
         state: AgentState,
     ) -> dict:
         """
-        Collect deterministic Kubernetes evidence.
+        Collect Kubernetes evidence.
+
+        Investigation is deterministic and does not
+        use the LLM.
         """
 
         incident = state["incident"]
@@ -163,8 +177,8 @@ def build_incident_graph(
         state: AgentState,
     ) -> dict:
         """
-        Convert raw investigation evidence into
-        deterministic diagnosis.
+        Convert Kubernetes investigation evidence
+        into a deterministic diagnosis.
         """
 
         investigation = state.get(
@@ -193,7 +207,13 @@ def build_incident_graph(
         state: AgentState,
     ) -> dict:
         """
-        Generate deterministic remediation plan.
+        Generate a remediation plan from the diagnosis.
+
+        IMPORTANT:
+
+        This node only proposes actions.
+
+        It does NOT modify Kubernetes.
         """
 
         diagnosis = state["diagnosis"]
@@ -228,7 +248,7 @@ def build_incident_graph(
         state: AgentState,
     ) -> str:
         """
-        Route the workflow based on human approval.
+        Decide what happens after human approval.
 
         approved=True:
             approval -> remediation
@@ -236,13 +256,15 @@ def build_incident_graph(
         approved=False:
             approval -> END
 
-        Default behavior is deny.
+        Default is DENY.
         """
 
-        if state.get(
+        approved = state.get(
             "remediation_approved",
             False,
-        ):
+        )
+
+        if approved:
             return "remediation"
 
         return END
@@ -255,17 +277,19 @@ def build_incident_graph(
         state: AgentState,
     ) -> dict:
         """
-        Execute remediation.
+        Execute the approved remediation plan.
 
-        This is the ONLY node that performs
-        Kubernetes mutation.
+        This is the ONLY workflow node responsible
+        for Kubernetes mutation.
 
-        The approved flag is passed to the
-        remediation service as a second
-        safety boundary.
+        There are two safety boundaries:
+
+        1. LangGraph approval state.
+        2. RemediationService approval check.
         """
 
         plan = state["remediation_plan"]
+
         incident = state["incident"]
 
         approved = state.get(
@@ -274,7 +298,7 @@ def build_incident_graph(
         )
 
         result = remediation_service.execute(
-            plan,
+            plan=plan,
             approved=approved,
             namespace=incident.namespace,
             service=incident.service,
@@ -291,42 +315,42 @@ def build_incident_graph(
     )
 
     # ==================================================
-    # EDGES
+    # GRAPH EDGES
     # ==================================================
 
+    # START
     graph.add_edge(
         START,
         "triage",
     )
 
+    # Triage -> Investigation
     graph.add_edge(
         "triage",
         "investigator",
     )
 
+    # Investigation -> Diagnosis
     graph.add_edge(
         "investigator",
         "diagnosis",
     )
 
+    # Diagnosis -> Planner
     graph.add_edge(
         "diagnosis",
         "planner",
     )
 
+    # Planner -> Human Approval
     graph.add_edge(
         "planner",
         "approval",
     )
 
-    # IMPORTANT:
-    #
-    # Do NOT use:
-    #
-    # graph.add_edge("approval", "remediation")
-    #
-    # because that would execute remediation even
-    # after human rejection.
+    # ==================================================
+    # APPROVAL -> REMEDIATION / END
+    # ==================================================
 
     graph.add_conditional_edges(
         "approval",
@@ -337,17 +361,44 @@ def build_incident_graph(
         },
     )
 
+    # ==================================================
+    # REMEDIATION -> END
+    # ==================================================
+
     graph.add_edge(
         "remediation",
         END,
     )
 
     # ==================================================
-    # CHECKPOINTER
+    # CHECKPOINTING
     # ==================================================
 
     checkpointer = InMemorySaver()
 
+    # ==================================================
+    # COMPILE
+    # ==================================================
+
     return graph.compile(
         checkpointer=checkpointer,
+    )
+
+
+# ======================================================
+# BACKWARD-COMPATIBLE FACTORY
+# ======================================================
+
+def build_workflow(
+    llm: BaseChatModel,
+):
+    """
+    Build and return the incident workflow.
+
+    This wrapper exists because IncidentService
+    imports build_workflow().
+    """
+
+    return build_incident_graph(
+        llm
     )

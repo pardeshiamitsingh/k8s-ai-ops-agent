@@ -1,4 +1,3 @@
-
 from typing import Any
 
 from k8s_ai_ops.models.remediation import RemediationPlan
@@ -9,8 +8,11 @@ class RemediationService:
     """
     Coordinates remediation approval and execution.
 
-    The service is responsible for enforcing the approval boundary.
-    Kubernetes mutations are performed by RemediationExecutor.
+    Responsibilities:
+
+    1. Enforce the human approval boundary.
+    2. Delegate execution to RemediationExecutor.
+    3. Never directly modify Kubernetes resources.
     """
 
     def __init__(
@@ -30,13 +32,10 @@ class RemediationService:
         namespace: str = "default",
         service: str | None = None,
     ) -> list[dict[str, Any]]:
-        """
-        Execute a remediation plan only when approval is granted.
-        """
 
-        # --------------------------------------------------
-        # Approval gate
-        # --------------------------------------------------
+        # ==================================================
+        # GLOBAL APPROVAL GATE
+        # ==================================================
 
         if plan.requires_human_approval and not approved:
             return [
@@ -46,9 +45,9 @@ class RemediationService:
                 }
             ]
 
-        # --------------------------------------------------
-        # Execute approved remediation
-        # --------------------------------------------------
+        # ==================================================
+        # EXECUTION
+        # ==================================================
 
         return self.executor.execute(
             plan=plan,

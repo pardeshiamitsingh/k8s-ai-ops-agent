@@ -9,10 +9,9 @@ class RemediationPlanner:
     """
     Deterministic remediation planner.
 
-    Converts a diagnosis into a proposed remediation plan.
+    Converts diagnosis into a remediation plan.
 
-    IMPORTANT:
-    This class NEVER modifies Kubernetes resources.
+    NEVER modifies Kubernetes.
     """
 
     def plan(
@@ -22,9 +21,41 @@ class RemediationPlanner:
 
         root_cause = diagnosis.root_cause
 
-        # --------------------------------------------------
+        # =====================================================
+        # Container repeatedly crashing
+        # =====================================================
+
+        if root_cause == "Container repeatedly crashing":
+
+            return RemediationPlan(
+                root_cause=root_cause,
+                actions=[
+                    RemediationAction(
+                        action="inspect_previous_logs",
+                        description=(
+                            "Inspect logs from the "
+                            "previous container instance."
+                        ),
+                        risk="low",
+                        requires_approval=False,
+                    ),
+                    RemediationAction(
+                        action="restart_workload",
+                        description=(
+                            "Restart the affected workload "
+                            "to recover the repeatedly "
+                            "crashing container."
+                        ),
+                        risk="medium",
+                        requires_approval=True,
+                    ),
+                ],
+                requires_human_approval=True,
+            )
+
+        # =====================================================
         # OOMKilled
-        # --------------------------------------------------
+        # =====================================================
 
         if root_cause == "OOMKilled":
 
@@ -34,16 +65,18 @@ class RemediationPlanner:
                     RemediationAction(
                         action="increase_memory_limit",
                         description=(
-                            "Increase the memory limit for "
-                            "the affected container."
+                            "Increase the memory limit "
+                            "for the affected container."
                         ),
                         risk="medium",
+                        requires_approval=True,
                     ),
                     RemediationAction(
                         action="inspect_memory_usage",
                         description=(
-                            "Inspect application memory usage "
-                            "and identify possible memory leaks."
+                            "Inspect application memory "
+                            "usage and identify possible "
+                            "memory leaks."
                         ),
                         risk="low",
                         requires_approval=False,
@@ -52,11 +85,16 @@ class RemediationPlanner:
                 requires_human_approval=True,
             )
 
-        # --------------------------------------------------
+        # =====================================================
         # CrashLoopBackOff
-        # --------------------------------------------------
+        # =====================================================
 
-        if root_cause == "CrashLoopBackOff":
+        if (
+            root_cause == "CrashLoopBackOff"
+            or root_cause.startswith(
+                "CrashLoopBackOff due to"
+            )
+        ):
 
             return RemediationPlan(
                 root_cause=root_cause,
@@ -64,8 +102,8 @@ class RemediationPlanner:
                     RemediationAction(
                         action="inspect_previous_logs",
                         description=(
-                            "Inspect logs from the previous "
-                            "container instance."
+                            "Inspect logs from the "
+                            "previous container instance."
                         ),
                         risk="low",
                         requires_approval=False,
@@ -73,18 +111,20 @@ class RemediationPlanner:
                     RemediationAction(
                         action="restart_workload",
                         description=(
-                            "Restart the affected workload "
-                            "after confirming the failure."
+                            "Restart the affected "
+                            "workload after confirming "
+                            "the failure."
                         ),
                         risk="medium",
+                        requires_approval=True,
                     ),
                 ],
                 requires_human_approval=True,
             )
 
-        # --------------------------------------------------
+        # =====================================================
         # Application error
-        # --------------------------------------------------
+        # =====================================================
 
         if root_cause == "Application error":
 
@@ -94,8 +134,8 @@ class RemediationPlanner:
                     RemediationAction(
                         action="inspect_application_logs",
                         description=(
-                            "Inspect the application stack "
-                            "trace and identify the failure."
+                            "Inspect the application "
+                            "stack trace."
                         ),
                         risk="low",
                         requires_approval=False,
@@ -103,20 +143,23 @@ class RemediationPlanner:
                     RemediationAction(
                         action="redeploy_application",
                         description=(
-                            "Deploy a corrected application "
-                            "version after fixing the error."
+                            "Deploy a corrected "
+                            "application version."
                         ),
                         risk="high",
+                        requires_approval=True,
                     ),
                 ],
                 requires_human_approval=True,
             )
 
-        # --------------------------------------------------
-        # Image pull failure
-        # --------------------------------------------------
+        # =====================================================
+        # Image pull
+        # =====================================================
 
-        if root_cause == "Container image pull failure":
+        if root_cause == (
+            "Container image pull failure"
+        ):
 
             return RemediationPlan(
                 root_cause=root_cause,
@@ -124,17 +167,19 @@ class RemediationPlanner:
                     RemediationAction(
                         action="verify_image",
                         description=(
-                            "Verify the configured container "
-                            "image name and tag."
+                            "Verify the configured "
+                            "container image name and tag."
                         ),
                         risk="low",
                         requires_approval=False,
                     ),
                     RemediationAction(
-                        action="verify_registry_credentials",
+                        action=(
+                            "verify_registry_credentials"
+                        ),
                         description=(
-                            "Verify credentials and permissions "
-                            "for the container registry."
+                            "Verify registry credentials "
+                            "and permissions."
                         ),
                         risk="low",
                         requires_approval=False,
@@ -143,39 +188,46 @@ class RemediationPlanner:
                 requires_human_approval=False,
             )
 
-        # --------------------------------------------------
+        # =====================================================
         # Probe failure
-        # --------------------------------------------------
+        # =====================================================
 
-        if root_cause == "Kubernetes health probe failure":
+        if root_cause == (
+            "Kubernetes health probe failure"
+        ):
 
             return RemediationPlan(
                 root_cause=root_cause,
                 actions=[
                     RemediationAction(
-                        action="inspect_probe_configuration",
+                        action=(
+                            "inspect_probe_configuration"
+                        ),
                         description=(
-                            "Inspect liveness, readiness, or "
-                            "startup probe configuration."
+                            "Inspect liveness, readiness, "
+                            "or startup probe configuration."
                         ),
                         risk="low",
                         requires_approval=False,
                     ),
                     RemediationAction(
-                        action="adjust_probe_configuration",
+                        action=(
+                            "adjust_probe_configuration"
+                        ),
                         description=(
-                            "Adjust probe thresholds or timing "
-                            "after validating application behavior."
+                            "Adjust probe thresholds "
+                            "after validation."
                         ),
                         risk="medium",
+                        requires_approval=True,
                     ),
                 ],
                 requires_human_approval=True,
             )
 
-        # --------------------------------------------------
-        # Unknown diagnosis
-        # --------------------------------------------------
+        # =====================================================
+        # Unknown
+        # =====================================================
 
         return RemediationPlan(
             root_cause=root_cause,
@@ -183,8 +235,8 @@ class RemediationPlanner:
                 RemediationAction(
                     action="collect_more_evidence",
                     description=(
-                        "Collect additional Kubernetes events, "
-                        "logs, and metrics before taking action."
+                        "Collect additional Kubernetes "
+                        "events, logs, and metrics."
                     ),
                     risk="low",
                     requires_approval=False,

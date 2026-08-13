@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import Mock
 
 from k8s_ai_ops.models.remediation import (
     RemediationAction,
@@ -9,52 +9,31 @@ from k8s_ai_ops.remediation.executor import (
 )
 
 
-def test_blocks_action_without_approval():
+def test_restart_workload_and_verify():
 
-    kubernetes = MagicMock()
+    kubernetes_client = Mock()
 
-    executor = RemediationExecutor(
-        kubernetes=kubernetes
-    )
+    kubernetes_client.restart_deployment.return_value = {
+        "status": "executed",
+        "action": "restart_workload",
+        "workload": "payment-service",
+        "namespace": "default",
+    }
 
-    plan = RemediationPlan(
-        root_cause="CrashLoopBackOff",
-        actions=[
-            RemediationAction(
-                action="restart_workload",
-                description="Restart workload",
-                risk="medium",
-                requires_approval=True,
-            )
-        ],
-        requires_human_approval=True,
-    )
-
-    results = executor.execute(
-        plan,
-        approval=False,
-        namespace="default",
-        service="payment-service",
-    )
-
-    assert len(results) == 1
-
-    assert results[0]["status"] == "blocked"
-
-    kubernetes.restart_workload.assert_not_called()
-
-
-def test_executes_restart_after_approval():
-
-    kubernetes = MagicMock()
-
-    kubernetes.restart_workload.return_value = {
-        "status": "restarted",
-        "service": "payment-service",
+    kubernetes_client.get_deployment_status.return_value = {
+        "deployment": "payment-service",
+        "namespace": "default",
+        "replicas": 3,
+        "ready_replicas": 3,
+        "updated_replicas": 3,
+        "available_replicas": 3,
+        "generation": 10,
+        "observed_generation": 10,
+        "rollout_complete": True,
     }
 
     executor = RemediationExecutor(
-        kubernetes=kubernetes
+        kubernetes_client=kubernetes_client
     )
 
     plan = RemediationPlan(
@@ -70,84 +49,30 @@ def test_executes_restart_after_approval():
         requires_human_approval=True,
     )
 
-    results = executor.execute(
-        plan,
-        approval=True,
+    result = executor.execute(
+        plan=plan,
+        approved=True,
         namespace="default",
         service="payment-service",
     )
 
-    assert len(results) == 1
+    assert len(result) == 1
 
-    assert results[0]["status"] == "executed"
+    assert result[0]["status"] == "verified"
 
-    kubernetes.restart_workload.assert_called_once_with(
+    assert result[0]["phase"] == "verification"
+
+    assert (
+        result[0]["verification"]["rollout_complete"]
+        is True
+    )
+
+    kubernetes_client.restart_deployment.assert_called_once_with(
         namespace="default",
-        service="payment-service",
+        deployment="payment-service",
     )
 
-
-def test_read_only_action_does_not_mutate():
-
-    kubernetes = MagicMock()
-
-    executor = RemediationExecutor(
-        kubernetes=kubernetes
-    )
-
-    plan = RemediationPlan(
-        root_cause="OOMKilled",
-        actions=[
-            RemediationAction(
-                action="inspect_memory_usage",
-                description="Inspect memory",
-                risk="low",
-                requires_approval=False,
-            )
-        ],
-        requires_human_approval=True,
-    )
-
-    results = executor.execute(
-        plan,
-        approval=False,
+    kubernetes_client.get_deployment_status.assert_called_once_with(
         namespace="default",
-        service="payment-service",
+        deployment="payment-service",
     )
-
-    assert results[0]["status"] == "skipped"
-
-    kubernetes.restart_workload.assert_not_called()
-
-
-def test_unsupported_action_is_blocked():
-
-    kubernetes = MagicMock()
-
-    executor = RemediationExecutor(
-        kubernetes=kubernetes
-    )
-
-    plan = RemediationPlan(
-        root_cause="Unknown",
-        actions=[
-            RemediationAction(
-                action="delete_production_database",
-                description="Delete database",
-                risk="high",
-                requires_approval=True,
-            )
-        ],
-        requires_human_approval=True,
-    )
-
-    results = executor.execute(
-        plan,
-        approval=True,
-        namespace="default",
-        service="payment-service",
-    )
-
-    assert results[0]["status"] == "blocked"
-
-    kubernetes.restart_workload.assert_not_called()

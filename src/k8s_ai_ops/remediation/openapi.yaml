@@ -1,0 +1,713 @@
+openapi: 3.0.3
+
+info:
+  title: K8s AI Ops Incident API
+  description: |
+    API for AI-assisted Kubernetes incident investigation,
+    deterministic diagnosis, human approval, and remediation.
+
+    ## Workflow
+
+    1. Create an incident.
+    2. AI classifies and investigates the incident.
+    3. A deterministic diagnosis is generated.
+    4. A remediation plan is generated.
+    5. If approval is required, the workflow pauses.
+    6. A human approves or rejects the remediation.
+    7. Approved remediation is executed.
+    8. The result includes remediation and verification information.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+tags:
+  - name: Incidents
+    description: Incident investigation and remediation APIs
+
+paths:
+
+  /api/v1/incidents:
+
+    post:
+      tags:
+        - Incidents
+
+      summary: Create and investigate an incident
+
+      description: |
+        Creates a Kubernetes incident and runs the incident
+        investigation workflow.
+
+        The workflow performs:
+
+        - Incident classification
+        - Initial hypothesis generation
+        - Kubernetes pod investigation
+        - Event collection
+        - Log collection
+        - Deterministic diagnosis
+        - Remediation planning
+
+        If the remediation requires human approval, the workflow
+        pauses and returns `approval_required`.
+
+      operationId: createIncident
+
+      requestBody:
+        required: true
+
+        content:
+          application/json:
+
+            schema:
+              $ref: '#/components/schemas/IncidentRequest'
+
+            example:
+              service: aiops-test
+              namespace: default
+              description: >
+                aiops-test pod is repeatedly restarting and
+                the busybox container is failing with exit code 1
+
+      responses:
+
+        '200':
+          description: Incident investigation completed or approval required
+
+          content:
+            application/json:
+
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+
+              example:
+                thread_id: f49333e6-496e-4cf0-9009-5895b6d8d3b8
+                status: approval_required
+
+                result:
+
+                  incident:
+                    service: aiops-test
+                    namespace: default
+                    description: >
+                      aiops-test pod is repeatedly restarting
+                      and the busybox container is failing
+                      with exit code 1
+                    severity: medium
+
+                  diagnosis:
+                    root_cause: Container repeatedly crashing
+                    confidence: 0.95
+
+                    evidence:
+                      - >
+                        Pod aiops-test-5db57777cb-jbg4d has
+                        container busybox repeatedly failing.
+                      - >
+                        Container busybox restart_count=115,
+                        ready=false, termination_reason=Error,
+                        exit_code=1.
+                      - >
+                        Kubernetes event reported BackOff
+                        restarting failed container busybox.
+
+                    recommended_next_steps:
+                      - Inspect the failing container logs.
+                      - Verify the container startup command and configuration.
+                      - Restart the affected workload after human approval.
+
+                    human_intervention_required: true
+
+                  remediation_plan:
+
+                    root_cause: Container repeatedly crashing
+
+                    requires_human_approval: true
+
+                    actions:
+
+                      - action: inspect_previous_logs
+                        description: >
+                          Inspect logs from the previous
+                          container instance.
+                        risk: low
+                        requires_approval: false
+
+                      - action: restart_workload
+                        description: >
+                          Restart the affected workload
+                          to recover the repeatedly crashing container.
+                        risk: medium
+                        requires_approval: true
+
+
+  /api/v1/incidents/{thread_id}/approval:
+
+    post:
+      tags:
+        - Incidents
+
+      summary: Approve or reject remediation
+
+      description: |
+        Resumes an incident workflow that is waiting for
+        human approval.
+
+        The `thread_id` must be the ID returned by
+        `POST /api/v1/incidents`.
+
+        If approved, supported remediation actions are executed.
+
+        If rejected, remediation is not executed.
+
+      operationId: approveIncident
+
+      parameters:
+
+        - name: thread_id
+          in: path
+          required: true
+
+          description: |
+            Incident workflow thread ID returned by
+            the incident creation API.
+
+          schema:
+            type: string
+            format: uuid
+
+          example: f49333e6-496e-4cf0-9009-5895b6d8d3b8
+
+      requestBody:
+        required: true
+
+        content:
+          application/json:
+
+            schema:
+              $ref: '#/components/schemas/ApprovalRequest'
+
+            example:
+              approved: true
+              approved_by: amit
+              reason: >
+                Reviewed the diagnosis and approved
+                restarting the affected workload.
+
+      responses:
+
+        '200':
+          description: Approval processed successfully
+
+          content:
+            application/json:
+
+              schema:
+                $ref: '#/components/schemas/ApprovalResponse'
+
+              example:
+                thread_id: f49333e6-496e-4cf0-9009-5895b6d8d3b8
+                status: completed
+
+                result:
+
+                  remediation_approved: true
+
+                  remediation_approved_by: amit
+
+                  remediation_approval_reason: >
+                    Reviewed the diagnosis and approved
+                    restarting the affected workload.
+
+                  remediation_result:
+
+                    - status: executed_not_verified
+                      action: restart_workload
+                      workload: aiops-test
+                      namespace: default
+                      phase: verification
+
+                      verification:
+                        deployment: aiops-test
+                        namespace: default
+                        replicas: 1
+                        ready_replicas: 0
+                        updated_replicas: 1
+                        available_replicas: 0
+                        generation: 2
+                        observed_generation: 1
+                        rollout_complete: false
+
+                  remediation_complete: true
+
+
+components:
+
+  schemas:
+
+    IncidentRequest:
+
+      type: object
+
+      required:
+        - service
+        - namespace
+        - description
+
+      properties:
+
+        service:
+          type: string
+          description: Kubernetes service or workload name
+          example: aiops-test
+
+        namespace:
+          type: string
+          description: Kubernetes namespace
+          example: default
+
+        description:
+          type: string
+          description: Human-readable incident description
+          example: >
+            aiops-test pod is repeatedly restarting and
+            the busybox container is failing with exit code 1
+
+
+    ApprovalRequest:
+
+      type: object
+
+      required:
+        - approved
+        - approved_by
+
+      properties:
+
+        approved:
+          type: boolean
+          description: Human approval decision
+          example: true
+
+        approved_by:
+          type: string
+          description: User who approved or rejected remediation
+          example: amit
+
+        reason:
+          type: string
+          description: Reason for the approval decision
+          example: >
+            Reviewed the diagnosis and approved
+            restarting the affected workload.
+
+
+    IncidentResponse:
+
+      type: object
+
+      properties:
+
+        thread_id:
+          type: string
+          format: uuid
+          example: f49333e6-496e-4cf0-9009-5895b6d8d3b8
+
+        status:
+          type: string
+          enum:
+            - approval_required
+            - completed
+
+        result:
+          $ref: '#/components/schemas/WorkflowResult'
+
+
+    ApprovalResponse:
+
+      type: object
+
+      properties:
+
+        thread_id:
+          type: string
+          format: uuid
+
+        status:
+          type: string
+          example: completed
+
+        result:
+          $ref: '#/components/schemas/WorkflowResult'
+
+
+    WorkflowResult:
+
+      type: object
+
+      properties:
+
+        incident:
+          $ref: '#/components/schemas/Incident'
+
+        analysis:
+          $ref: '#/components/schemas/Analysis'
+
+        investigation_results:
+          $ref: '#/components/schemas/InvestigationResults'
+
+        investigation_complete:
+          type: boolean
+
+        diagnosis:
+          $ref: '#/components/schemas/Diagnosis'
+
+        remediation_plan:
+          $ref: '#/components/schemas/RemediationPlan'
+
+        remediation_approved:
+          type: boolean
+
+        remediation_approved_by:
+          type: string
+
+        remediation_approval_reason:
+          type: string
+
+        remediation_result:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemediationResult'
+
+        remediation_complete:
+          type: boolean
+
+
+    Incident:
+
+      type: object
+
+      properties:
+
+        service:
+          type: string
+          example: aiops-test
+
+        namespace:
+          type: string
+          example: default
+
+        description:
+          type: string
+
+        severity:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          example: medium
+
+
+    Analysis:
+
+      type: object
+
+      properties:
+
+        incident_type:
+          type: string
+          example: Pod Failure
+
+        investigation_required:
+          type: boolean
+          example: true
+
+        initial_hypotheses:
+          type: array
+          items:
+            type: string
+
+        reasoning:
+          type: string
+
+
+    InvestigationResults:
+
+      type: object
+
+      properties:
+
+        pods:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pod'
+
+        relevant_pods:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pod'
+
+        pod_events:
+          type: object
+
+          additionalProperties:
+            type: array
+
+            items:
+              $ref: '#/components/schemas/PodEvent'
+
+        pod_logs:
+          type: object
+
+          additionalProperties:
+            type: string
+
+
+    Pod:
+
+      type: object
+
+      properties:
+
+        name:
+          type: string
+
+        namespace:
+          type: string
+
+        phase:
+          type: string
+
+          example: Running
+
+        node:
+          type: string
+
+        pod_ip:
+          type: string
+
+        containers:
+          type: array
+
+          items:
+            $ref: '#/components/schemas/Container'
+
+
+    Container:
+
+      type: object
+
+      properties:
+
+        name:
+          type: string
+
+        restart_count:
+          type: integer
+
+        ready:
+          type: boolean
+
+        termination_reason:
+          type: string
+          nullable: true
+
+        exit_code:
+          type: integer
+          nullable: true
+
+
+    PodEvent:
+
+      type: object
+
+      properties:
+
+        type:
+          type: string
+          example: Warning
+
+        reason:
+          type: string
+          example: BackOff
+
+        message:
+          type: string
+
+        count:
+          type: integer
+
+        first_timestamp:
+          type: string
+          format: date-time
+
+        last_timestamp:
+          type: string
+          format: date-time
+
+        source:
+          type: string
+          example: kubelet
+
+
+    Diagnosis:
+
+      type: object
+
+      required:
+        - root_cause
+        - confidence
+        - evidence
+        - recommended_next_steps
+        - human_intervention_required
+
+      properties:
+
+        root_cause:
+          type: string
+          example: Container repeatedly crashing
+
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.95
+
+        evidence:
+          type: array
+          items:
+            type: string
+
+        recommended_next_steps:
+          type: array
+          items:
+            type: string
+
+        human_intervention_required:
+          type: boolean
+          example: true
+
+
+    RemediationPlan:
+
+      type: object
+
+      required:
+        - root_cause
+        - actions
+        - requires_human_approval
+
+      properties:
+
+        root_cause:
+          type: string
+
+        actions:
+          type: array
+
+          items:
+            $ref: '#/components/schemas/RemediationAction'
+
+        requires_human_approval:
+          type: boolean
+
+
+    RemediationAction:
+
+      type: object
+
+      properties:
+
+        action:
+          type: string
+          example: restart_workload
+
+        description:
+          type: string
+
+        risk:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+
+        requires_approval:
+          type: boolean
+
+
+    RemediationResult:
+
+      type: object
+
+      properties:
+
+        status:
+          type: string
+          enum:
+            - executed
+            - executed_not_verified
+            - unsupported
+            - rejected
+            - failed
+
+        action:
+          type: string
+
+        workload:
+          type: string
+
+        namespace:
+          type: string
+
+        restarted_at:
+          type: string
+          format: date-time
+
+        phase:
+          type: string
+
+        reason:
+          type: string
+
+        verification:
+          $ref: '#/components/schemas/RolloutVerification'
+
+
+    RolloutVerification:
+
+      type: object
+
+      properties:
+
+        deployment:
+          type: string
+
+        namespace:
+          type: string
+
+        replicas:
+          type: integer
+
+        ready_replicas:
+          type: integer
+
+        updated_replicas:
+          type: integer
+
+        available_replicas:
+          type: integer
+
+        generation:
+          type: integer
+
+        observed_generation:
+          type: integer
+
+        rollout_complete:
+          type: boolean
